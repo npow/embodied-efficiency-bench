@@ -292,7 +292,7 @@ class Gr00tN17Policy(BasePolicy):
       obs_image_hw: Tuple[int, int] = (256, 256),
       image_hw: Optional[Sequence[int]] = None,
       torch_compile: bool = False,
-      enable_batching: bool = True,
+      enable_batching: bool = False,
       batch_buckets: Sequence[int] = (1, 2, 4, 8, 16),
       micro_batch_size: int = 16,
       batch_window_ms: float = 8.0,
@@ -1040,6 +1040,13 @@ class Gr00tN17Policy(BasePolicy):
 
   def _execute_batch(self, items: Sequence[_PreparedGr00tSample], bucket_b: int) -> List[np.ndarray]:
     import torch
+
+    if len(items) > 1:
+      # A row's bits must not depend on its neighbours. A batched call is not batch-invariant: cuBLAS picks its GEMM tiling from
+      # the row count, so the same sample gives slightly different bf16 results at B=1, 2, 4, ... and, because the gripper
+      # dimension is a near step function, a few golden samples flip whole chunks (cosine 0.75-0.9) in whichever batch they
+      # land in. The golden is generated at B=1, so every row runs the B=1 call.
+      return [self._execute_batch([item], 1)[0] for item in items]
 
     n_real = len(items)
     n_pad = bucket_b - n_real
