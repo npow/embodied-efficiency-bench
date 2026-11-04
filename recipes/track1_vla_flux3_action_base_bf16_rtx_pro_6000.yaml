@@ -33,4 +33,4 @@ chunk_horizon_s: 0.5333
 control_freq_hz: 15.0
 action_chunk_sizes:
 - 8
-notes: Reference recipe for black-forest-labs/flux-3-action-droid, the base package (root weights, BF16): 4 denoising steps with classifier-free guidance (video 4.0, action 1.0, the checkpoint defaults and BFL's preferred production setting), H=32, 3 cameras, DROID. Each action chunk runs the 7B transformer 8 times (4 steps x conditional and unconditional). Traces are the pinned DROID episodes at 256x256 with all three cameras; the server resizes frames to the model's 360x640 inside the timed call.
+notes: "Reference recipe for black-forest-labs/flux-3-action-droid, the base package (root weights, BF16): 4 denoising steps with classifier-free guidance (video 4.0, action 1.0, the checkpoint defaults and BFL's preferred production setting), H=32, 3 cameras, DROID. Each action chunk runs the 7B transformer 8 times (4 steps x conditional and unconditional). Traces are the pinned DROID episodes at 256x256 with all three cameras; the server resizes frames to the model's 360x640 inside the timed call."
