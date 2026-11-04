@@ -46,7 +46,7 @@ class Flux3ActionPolicy(BasePolicy):
     compile_dit: torch.compile the DiT in `prepare_for_serving` (off by default: the reference is eager).
     execute_horizon: actions executed per chunk by the loadgen (the model emits 32).
     control_hz: DROID control rate; sets Caps.dt_ms.
-    seed: base seed; each call runs with inference_seed = seed + obs.step, so replays are deterministic.
+    seed: base seed; each call runs with inference_seed = seed + a digest of the observation's content, so replays of one observation are deterministic.
     hf_offline: read the checkpoint from the local cache only.
     cameras / obs_hw: what the load generator sends (the trace bundle's cameras and square resolution), reported in `Caps` so the
       harness's golden canaries match it. The model's own 360x640, three-camera input is built inside the call.
@@ -151,7 +151,9 @@ class Flux3ActionPolicy(BasePolicy):
     state = np.asarray(obs.proprio, dtype=np.float32).reshape(-1)
     if state.shape != (8,):
       raise ValueError(f"FLUX 3 Action needs an 8-dim state, got shape {state.shape}.")
-    actions = self._infer(self._cameras(obs), state, obs.instruction, self._seed + int(obs.step))
+    # the noise a call samples depends on the observation, not on which request number it arrives as: the golden run and a later replay of the
+    # same observation (or a candidate's run) then start from the same noise
+    actions = self._infer(self._cameras(obs), state, obs.instruction, self._seed + int(obs.content_digest_u64() % (2**31 - 1)))
     self._horizon, self._action_dim = int(actions.shape[0]), int(actions.shape[1])
     return ActionChunk(actions=actions)
 

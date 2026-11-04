@@ -109,3 +109,25 @@ def test_base_bf16_recipe_is_the_four_step_guided_package():
   recipe = yaml.safe_load((ROOT / "recipes" / "track1_vla_flux3_action_base_bf16_rtx_pro_6000.yaml").read_text())
   assert recipe["denoising_steps"] == 4 == recipe["reference_denoising_steps"] and recipe["precision"] == "bf16"
   assert "hf_subdir" not in recipe and recipe["hardware_sku"] in HARDWARE_SKU_SPECS and recipe["num_cameras"] == 3
+
+
+def test_a_calls_noise_depends_on_the_observation_not_on_the_request_number():
+  captured = []
+
+  class Recorder(Flux3ActionPolicy):
+    def __init__(self):
+      self._seed = 7
+
+    def _cameras(self, obs):
+      return {c: np.zeros((4, 4, 3), np.uint8) for c in MODEL_CAMERAS}
+
+    def _infer(self, cameras, state, instruction, seed):
+      captured.append(seed)
+      return np.zeros((32, 8), np.float32)
+
+  def obs(step, value):
+    return Observation(session_id="s", step=step, images={"a": np.full((4, 4, 3), value, np.uint8)}, proprio=np.zeros(8, np.float32), instruction="x")
+
+  policy = Recorder()
+  policy.predict(obs(0, 1)); policy.predict(obs(99, 1)); policy.predict(obs(0, 2))
+  assert captured[0] == captured[1] and captured[0] != captured[2]
