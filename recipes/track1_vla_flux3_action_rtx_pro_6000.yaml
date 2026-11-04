@@ -5,7 +5,7 @@ track: VLA_TRACK
 division: CLOSED
 scenario: P1_ONBOARD
 power_class: E_OPEN
-perf_cap: CAP_SINGLE_CHIP
+perf_cap: CAP_DATACENTER_1000T
 perf_cap_mode: native_qualifying_device
 num_devices: 1
 model_name: flux-3-action-droid-rtx-pro-6000-bf16-sd-fp8r
