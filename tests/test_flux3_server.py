@@ -103,3 +103,9 @@ def test_three_cameras_are_refused_when_the_source_has_fewer(tmp_path):
   trace.cameras, trace.images = trace.cameras[:2], {k: v for k, v in list(trace.images.items())[:2]}
   with pytest.raises(ValueError, match="needs three"):
     build_shard_from_real_lerobot_trace(trace, episode_id="e", source_dataset="DROID", subset_name="s", license_spdx="MIT", resolution_hw=32, num_cameras=3)
+
+
+def test_base_bf16_recipe_is_the_four_step_guided_package():
+  recipe = yaml.safe_load((ROOT / "recipes" / "track1_vla_flux3_action_base_bf16_rtx_pro_6000.yaml").read_text())
+  assert recipe["denoising_steps"] == 4 == recipe["reference_denoising_steps"] and recipe["precision"] == "bf16"
+  assert "hf_subdir" not in recipe and recipe["hardware_sku"] in HARDWARE_SKU_SPECS and recipe["num_cameras"] == 3
