@@ -4,10 +4,9 @@ The reference serves the released one-step FP8r package (`variants/sd-fp8r`) wit
 BF16 activations, text encoder and video VAE as shipped. Every request is a B=1 call; calls serialize on one lock (single chip).
 
 Observation contract (DROID): three cameras (wrist, left exterior, right exterior), 8-dim state, a language instruction.
-Action contract: a (32, 8) chunk. Trace cameras are matched by name (`wrist`, `agentview`/`exterior_1`/`left`, `exterior_2`/`right`) and, when the
-names are unknown, by order [wrist, left, right]. The benchmark's trace format carries two cameras per frame, so when only the wrist and
-one exterior camera arrive the right exterior camera is that exterior camera repeated (reported in `Caps.server_impl` as
-`+dup-right-camera`): compute is the same three-camera call, and a candidate and the reference see identical frames. Frames that are not the model's 360x640 are resized (bilinear) inside the timed call.
+Action contract: a (32, 8) chunk. Trace cameras are matched by name (`wrist`, `exterior_1`/`left`, `exterior_2`/`right`) and, when the
+names are unknown, by order [wrist, left, right]. All three views must arrive: nothing is repeated or invented, and a missing camera is
+an error. The trace bundle must be prepared with `eeb data prepare-traces --num-cameras 3`. Frames that are not the model's 360x640 are resized (bilinear) inside the timed call.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ DEFAULT_REVISION = "e3b6c915cdcdfb1d5db08e133b8ca3d29be2d7d4"
 MODEL_HW = (360, 640)
 MODEL_CAMERAS = ("images.wrist", "images.left", "images.right")
 # trace camera name fragments -> model camera, first match wins
-_CAMERA_HINTS = (("wrist", "images.wrist"), ("agentview", "images.left"), ("exterior_1", "images.left"), ("exterior_image_1", "images.left"), ("left", "images.left"),
+_CAMERA_HINTS = (("wrist", "images.wrist"), ("exterior_1", "images.left"), ("exterior_image_1", "images.left"), ("left", "images.left"),
                  ("exterior_2", "images.right"), ("exterior_image_2", "images.right"), ("right", "images.right"))
 VARIANTS = {"sd-fp8r": "variants/sd-fp8r", "base": None}
 
@@ -55,7 +54,7 @@ class Flux3ActionPolicy(BasePolicy):
 
   def __init__(self, device: str = "cuda", precision_tag: str = "BF16", variant: str = "sd-fp8r", repo: str = DEFAULT_REPO,
                revision: str = DEFAULT_REVISION, compile_dit: bool = False, execute_horizon: int = 8, control_hz: float = 15.0,
-               seed: int = 0, hf_offline: bool = False, cameras: Sequence[str] = ("agentview", "wrist"),
+               seed: int = 0, hf_offline: bool = False, cameras: Sequence[str] = ("exterior_image_1_left", "exterior_image_2_left", "wrist_image_left"),
                obs_hw: Tuple[int, int] = (256, 256)) -> None:
     if variant not in VARIANTS:
       raise ValueError(f"variant must be one of {sorted(VARIANTS)}, got {variant!r}.")
@@ -73,7 +72,6 @@ class Flux3ActionPolicy(BasePolicy):
     self.execute_horizon = int(execute_horizon)
     self.dt_ms = 1000.0 / float(control_hz)
     self._seed = int(seed)
-    self._dup_right = False
     self._cameras_in, self._obs_hw = tuple(cameras), (int(obs_hw[0]), int(obs_hw[1]))
     self._lock = threading.Lock()
     subfolder = VARIANTS[variant]
@@ -99,7 +97,7 @@ class Flux3ActionPolicy(BasePolicy):
     return Caps(track="VLA_TRACK", horizon=self._horizon, dt_ms=self.dt_ms, modalities=("rgb", "proprio", "language"),
                 precision=self.precision_tag, model_id=f"flux-3-action-droid:{self.variant}",
                 server_impl=(f"flux-action-{self._flux_version}+torch-{self._torch.__version__}-{self.device}-steps{self._steps}"
-                             f"{'+dup-right-camera' if self._dup_right else ''}"),
+                             f""),
                 action_dim=self._action_dim, proprio_dim=8, cameras=self._cameras_in, image_height=self._obs_hw[0], image_width=self._obs_hw[1],
                 execute_horizon=self.execute_horizon)
 
@@ -117,9 +115,6 @@ class Flux3ActionPolicy(BasePolicy):
       for target in MODEL_CAMERAS:
         if target not in mapped and leftover:
           mapped[target] = leftover.pop(0)
-    if "images.right" not in mapped and "images.left" in mapped and "images.wrist" in mapped:
-      mapped["images.right"] = mapped["images.left"]
-      self._dup_right = True
     missing = [t for t in MODEL_CAMERAS if t not in mapped]
     if missing:
       raise ValueError(f"Observation is missing cameras for {missing} (got {sorted(obs.images)}).")

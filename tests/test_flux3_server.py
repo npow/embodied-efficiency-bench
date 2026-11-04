@@ -31,11 +31,9 @@ def test_unknown_camera_names_fall_back_to_order():
   assert [int(mapped[c][0, 0, 0]) for c in MODEL_CAMERAS] == [0, 1, 2]
 
 
-def test_a_two_camera_trace_repeats_the_exterior_camera_for_the_right_one_and_says_so():
-  policy = _policy()
-  policy._dup_right = False
-  mapped = policy._cameras(_obs(["agentview", "wrist"]))
-  assert mapped["images.left"] is mapped["images.right"] and int(mapped["images.wrist"][0, 0, 0]) == 1 and policy._dup_right
+def test_two_cameras_are_an_error_nothing_is_repeated():
+  with pytest.raises(ValueError, match="missing cameras"):
+    _policy()._cameras(_obs(["agentview", "wrist"]))
 
 
 def test_missing_wrist_camera_is_an_error():
@@ -65,3 +63,43 @@ def test_a_96gb_part_fails_the_single_chip_envelope_and_passes_the_tier_its_reci
   assert check_envelope(hardware_sku="RTX_PRO_6000_96GB", inventory=inv, perf_cap="CAP_SINGLE_CHIP").passed is False
   recipe = yaml.safe_load((ROOT / "recipes" / "track1_vla_flux3_action_rtx_pro_6000.yaml").read_text())
   assert recipe["perf_cap"] == "CAP_DATACENTER_1000T" == HARDWARE_SKU_SPECS["RTX_PRO_6000_96GB"]["default_perf_cap"]
+
+
+class _FakeTrace:
+  """A decoded LeRobot episode with three cameras, as the DROID loader returns it."""
+
+  def __init__(self, n=24):
+    rng = np.random.default_rng(0)
+    self.episode_id, self.instruction, self.cameras = "fake", "put the marker in the pot", ["exterior_image_1_left", "exterior_image_2_left", "wrist_image_left"]
+    still = rng.integers(0, 255, (1, 18, 32, 3)).astype(int)
+    drift = np.linspace(0, 3, n)[:, None, None, None].astype(int)                  # frames change slowly, as a real episode does
+    self.images = {c: np.clip(still + drift + 40 * i, 0, 255).astype(np.uint8) for i, c in enumerate(self.cameras)}   # distinct cameras
+    self.proprio = rng.standard_normal((n, 8)).astype(np.float32)
+    self.action = rng.standard_normal((n, 7)).astype(np.float32)
+
+  def __len__(self):
+    return len(self.proprio)
+
+
+def test_three_camera_shard_keeps_each_real_camera_and_round_trips(tmp_path):
+  from embodied_bench.dataset_loader import build_shard_from_real_lerobot_trace, load_episode_shard_npz, save_episode_shard_npz
+
+  kw = dict(episode_id="e", source_dataset="DROID", subset_name="s", license_spdx="MIT", resolution_hw=32)
+  shard = build_shard_from_real_lerobot_trace(_FakeTrace(), num_cameras=3, **kw)
+  assert shard.rgb_frames.shape[:3] == (16, 3, 3) and shard.camera_names == tuple(_FakeTrace().cameras)
+  assert not np.array_equal(shard.rgb_frames[:, 0], shard.rgb_frames[:, 1])                 # three different views, none repeated
+  save_episode_shard_npz(shard, tmp_path / "e.npz")
+  assert load_episode_shard_npz(tmp_path / "e.npz").camera_names == shard.camera_names
+  legacy = build_shard_from_real_lerobot_trace(_FakeTrace(), **kw)
+  assert legacy.rgb_frames.shape[1] == 2 and legacy.camera_names == ("agentview", "wrist")  # the default is unchanged
+  save_episode_shard_npz(legacy, tmp_path / "l.npz")
+  assert "camera_names" not in bytes(np.load(tmp_path / "l.npz")["meta_json"]).decode()      # legacy shards keep their metadata
+
+
+def test_three_cameras_are_refused_when_the_source_has_fewer(tmp_path):
+  from embodied_bench.dataset_loader import build_shard_from_real_lerobot_trace
+
+  trace = _FakeTrace()
+  trace.cameras, trace.images = trace.cameras[:2], {k: v for k, v in list(trace.images.items())[:2]}
+  with pytest.raises(ValueError, match="needs three"):
+    build_shard_from_real_lerobot_trace(trace, episode_id="e", source_dataset="DROID", subset_name="s", license_spdx="MIT", resolution_hw=32, num_cameras=3)
