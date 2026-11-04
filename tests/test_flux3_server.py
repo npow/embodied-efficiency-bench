@@ -31,9 +31,16 @@ def test_unknown_camera_names_fall_back_to_order():
   assert [int(mapped[c][0, 0, 0]) for c in MODEL_CAMERAS] == [0, 1, 2]
 
 
-def test_missing_camera_is_an_error():
+def test_a_two_camera_trace_repeats_the_exterior_camera_for_the_right_one_and_says_so():
+  policy = _policy()
+  policy._dup_right = False
+  mapped = policy._cameras(_obs(["agentview", "wrist"]))
+  assert mapped["images.left"] is mapped["images.right"] and int(mapped["images.wrist"][0, 0, 0]) == 1 and policy._dup_right
+
+
+def test_missing_wrist_camera_is_an_error():
   with pytest.raises(ValueError, match="missing cameras"):
-    _policy()._cameras(_obs(["wrist_image_left", "exterior_image_1_left"]))
+    _policy()._cameras(_obs(["exterior_image_1_left", "exterior_image_2_left"]))
 
 
 def test_rtx_pro_6000_is_a_hardware_sku_with_a_provider_price():
