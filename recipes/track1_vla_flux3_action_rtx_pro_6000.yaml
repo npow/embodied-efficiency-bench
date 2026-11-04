@@ -1,0 +1,42 @@
+# EEB v1.0 Closed Division Recipe (reference)
+# Model: flux-3-action-droid (sd-fp8r, one denoising step) | Hardware SKU: RTX_PRO_6000_96GB | Division: CLOSED
+recipe_id: track1_vla_flux3_action_rtx_pro_6000
+track: VLA_TRACK
+division: CLOSED
+scenario: P1_ONBOARD
+power_class: E_OPEN
+perf_cap: CAP_SINGLE_CHIP
+perf_cap_mode: native_qualifying_device
+num_devices: 1
+model_name: flux-3-action-droid-rtx-pro-6000-bf16-sd-fp8r
+model_family: flux-3-action
+baseline_model_id: flux-3-action-droid
+hf_repo_id: black-forest-labs/flux-3-action-droid
+hf_revision: e3b6c915cdcdfb1d5db08e133b8ca3d29be2d7d4
+hf_subdir: variants/sd-fp8r
+hardware_sku: RTX_PRO_6000_96GB
+precision: bf16
+denoising_steps: 1
+reference_denoising_steps: 1
+native_action_chunk_size: 32
+execute_horizon: 8
+concurrency_levels:
+- 1
+- 2
+- 4
+- 8
+optimizations: []
+compression_tier: strict_lossless
+weights_frozen: true
+resolution_hw: 256
+reference_resolution_hw: 256
+num_cameras: 3
+reference_num_cameras: 3
+execution_strategy: ASYNC_CHUNK
+chunk_horizon_s: 0.5333
+control_freq_hz: 15.0
+action_chunk_sizes:
+- 8
+notes: Reference recipe for black-forest-labs/flux-3-action-droid (released one-step FP8r package, BF16 activations, H=32, 3 cameras, DROID).
+  Traces are the pinned DROID episodes prepared at 256x256 (the trace pipeline is square-only); the server resizes frames to the model's
+  360x640 inside the timed call. The source videos are 180x320, so this is a throughput/latency reference, not a visual-fidelity one.
