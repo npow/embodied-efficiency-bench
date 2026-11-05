@@ -305,7 +305,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
 
   log("envelope check ...")
   allow_no_dev = bool(args.allow_no_device or (policy is not None and policy.capabilities().is_synthetic))
-  envelope = check_envelope(hardware_sku=sku, allow_no_device=allow_no_dev)
+  envelope = check_envelope(hardware_sku=sku, allow_no_device=allow_no_dev, perf_cap=(recipe_dict or {}).get("perf_cap") if recipe_cfg else None)
   log(f"envelope: passed={envelope.passed} num_devices={envelope.num_devices} reason={envelope.reason}")
 
   sidecar = TelemetrySidecar.auto(hz=args.telemetry_hz, device_index=args.device_index, prefer=None if args.telemetry_source in (None, "auto") else args.telemetry_source)
@@ -459,7 +459,7 @@ def cmd_envelope_check(args: argparse.Namespace) -> int:
   from eeb.envelope.check import check_envelope
 
   resolved_sku = resolve_hardware_sku(args.sku) if args.sku else None
-  res = check_envelope(hardware_sku=resolved_sku, allow_no_device=args.allow_no_device)
+  res = check_envelope(hardware_sku=resolved_sku, allow_no_device=args.allow_no_device, perf_cap=args.perf_cap)
   if args.json:
     print(json.dumps(res.to_dict(), indent=2))
   else:
@@ -619,6 +619,7 @@ def build_parser() -> argparse.ArgumentParser:
   p_check = env_sub.add_parser("check", help="enumerate devices and enforce num_devices == 1")
   p_check.add_argument("--sku", "--hardware", "--hardware-sku", dest="sku", default=None, help="hardware SKU from embodied_bench.schema.HARDWARE_SKU_SPECS")
   p_check.add_argument("--allow-no-device", action="store_true")
+  p_check.add_argument("--perf-cap", default=None, help="performance-cap tier to check against (default: the single-chip limits), e.g. CAP_DATACENTER_1000T")
   p_check.add_argument("--json", action="store_true")
   p_check.set_defaults(func=cmd_envelope_check)
 

@@ -339,6 +339,9 @@ class EmbodiedEpisodeShard:
   g4_perturbed_rgb: np.ndarray                    # shape (T_pert, 2, 3, 64, 64), float32 in [0, 1]
   golden_bf16_ref_actions: Dict[str, np.ndarray]  # model_id -> shape (T, K, 7), float32
   golden_bf16_ref_latents: Dict[str, np.ndarray]  # model_id -> shape (T, H, 16, 16), float32
+  # One name per camera axis of `rgb_frames`. The legacy two-camera shards are ("agentview", "wrist"); a three-camera shard (DROID, for a
+  # model that reads three views) carries the source dataset's own camera names.
+  camera_names: Tuple[str, ...] = ("agentview", "wrist")
 
   @property
   def num_steps(self) -> int:
@@ -388,14 +391,16 @@ class EmbodiedEpisodeShard:
     if (
         self.rgb_frames.ndim != 5
         or self.rgb_frames.shape[0] != t
-        or self.rgb_frames.shape[1] != 2
+        or self.rgb_frames.shape[1] not in (2, 3)
         or self.rgb_frames.shape[2] != 3
         or self.rgb_frames.dtype != np.uint8
     ):
       raise ValueError(
-          f"Expected rgb_frames shape ({t}, 2, 3, H, W) uint8, got "
+          f"Expected rgb_frames shape ({t}, 2 or 3, 3, H, W) uint8, got "
           f"{self.rgb_frames.shape} {self.rgb_frames.dtype}."
       )
+    if len(self.camera_names) != self.rgb_frames.shape[1] or len(set(self.camera_names)) != len(self.camera_names):
+      raise ValueError(f"Shard {self.episode_id!r}: camera_names {self.camera_names} do not name the {self.rgb_frames.shape[1]} camera axes.")
     coherence = self.temporal_frame_coherence()
     if coherence < 0.92:
       raise ValueError(
@@ -499,6 +504,8 @@ def save_episode_shard_npz(
       "action_models": action_models,
       "latent_models": latent_models,
   }
+  if tuple(shard.camera_names) != ("agentview", "wrist"):    # legacy two-camera shards keep byte-identical metadata
+    meta_dict["camera_names"] = list(shard.camera_names)
   meta_bytes = np.frombuffer(
       json.dumps(meta_dict, sort_keys=True).encode("utf-8"),
       dtype=np.uint8,
@@ -588,6 +595,7 @@ def load_episode_shard_npz(
         g4_perturbed_rgb=wrap(data["g4_perturbed_rgb"], np.float32),
         golden_bf16_ref_actions=ref_actions,
         golden_bf16_ref_latents=ref_latents,
+        camera_names=tuple(meta.get("camera_names") or ("agentview", "wrist")),
     )
   shard.validate()
   return shard
@@ -813,8 +821,12 @@ def build_shard_from_real_lerobot_trace(
     resolution_hw: int = 64,
     num_perturbed_steps: int = 4,
     instruction_override: Optional[str] = None,
+    num_cameras: int = 2,
 ) -> EmbodiedEpisodeShard:
-  """Materialize an ``EmbodiedEpisodeShard`` directly from decoded real LeRobot camera frames and telemetry."""
+  """Materialize an ``EmbodiedEpisodeShard`` directly from decoded real LeRobot camera frames and telemetry.
+
+  `num_cameras=2` keeps the legacy shard (the first two decoded cameras, named agentview and wrist). `num_cameras=3` keeps the first three
+  decoded cameras under their own names and fails when the source has fewer: nothing is repeated or invented."""
   t = int(num_steps)
   k = int(chunk_size_k)
   h = int(horizon_h)
@@ -828,15 +840,19 @@ def build_shard_from_real_lerobot_trace(
   cams = list(trace.cameras)
   if not cams:
     raise ValueError(f"Real trace {trace.episode_id!r} contains no decoded camera streams.")
-  cam0 = cams[0]
-  cam1 = cams[1] if len(cams) > 1 else cams[0]
+  if int(num_cameras) == 3:
+    if len(cams) < 3:
+      raise ValueError(f"Real trace {trace.episode_id!r} has {len(cams)} decoded camera streams {cams}; num_cameras=3 needs three.")
+    chosen, camera_names = cams[:3], tuple(cams[:3])
+  elif int(num_cameras) == 2:
+    chosen, camera_names = [cams[0], cams[1] if len(cams) > 1 else cams[0]], ("agentview", "wrist")
+  else:
+    raise ValueError(f"num_cameras must be 2 or 3, got {num_cameras}.")
 
-  rgb_frames = np.zeros((t, 2, 3, hw, hw), dtype=np.uint8)
+  rgb_frames = np.zeros((t, len(chosen), 3, hw, hw), dtype=np.uint8)
   for step_i in range(t):
-    f0 = _resize_rgb_uint8_hwc(trace.images[cam0][s0 + step_i], hw)
-    f1 = _resize_rgb_uint8_hwc(trace.images[cam1][s0 + step_i], hw)
-    rgb_frames[step_i, 0] = np.transpose(f0, (2, 0, 1))
-    rgb_frames[step_i, 1] = np.transpose(f1, (2, 0, 1))
+    for cam_i, cam in enumerate(chosen):
+      rgb_frames[step_i, cam_i] = np.transpose(_resize_rgb_uint8_hwc(trace.images[cam][s0 + step_i], hw), (2, 0, 1))
   # Anchor single corner byte so clean/255.0 == 0.0 for exact float32 Gate G4 L_inf == 1e-3.
   rgb_frames[:, 0, 0, 0, 0] = np.uint8(0)
 
@@ -926,6 +942,7 @@ def build_shard_from_real_lerobot_trace(
       g4_perturbed_rgb=g4_perturbed_rgb,
       golden_bf16_ref_actions=golden_bf16_ref_actions,
       golden_bf16_ref_latents=golden_bf16_ref_latents,
+      camera_names=camera_names,
   )
   shard.validate()
   return shard
@@ -1041,6 +1058,7 @@ def generate_real_embodiedx_traces_from_lerobot(
     cache_dir: Optional[str | Path] = None,
     tracks: Optional[str] = None,
     token: Optional[str] = None,
+    num_cameras: int = 2,
 ) -> Dict[str, Any]:
   """Download and decode genuine Hugging Face LeRobot camera traces into verified EmbodiedX shards.
 
@@ -1129,6 +1147,7 @@ def generate_real_embodiedx_traces_from_lerobot(
         start_step=start_step,
         num_steps=int(num_steps),
         resolution_hw=int(resolution_hw),
+        num_cameras=int(num_cameras),
     )
     shard_path = out_dir / str(spec["filename"])
     save_episode_shard_npz(shard, shard_path)

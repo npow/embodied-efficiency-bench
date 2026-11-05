@@ -1005,6 +1005,27 @@ HARDWARE_SKU_SPECS: Dict[str, Dict[str, Any]] = {
         "hourly_cost_usd": 1.15,
         "capex_usd": 8500.0,
     },
+    "RTX_PRO_6000_96GB": {
+        "display_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition (96GB GDDR7)",
+        "vendor": "NVIDIA",
+        "num_devices": 1,
+        "vram_mb": 98304,
+        "tdp_watts": 600.0,
+        "idle_watts": 50.0,
+        "system_overhead_watts": 0.0,
+        "fp16_tflops": 503.8,
+        "fp8_tflops": 1007.6,
+        "dense_int8_tops": 1007.6,
+        "supports_native_fp8": True,
+        "mem_bw_gbps": 1597.0,
+        "power_class": PowerClass.E_OPEN.value,
+        "default_perf_cap": PerformanceCapId.CAP_DATACENTER_1000T.value,
+        # hourly_cost_usd: Google Cloud on-demand list price of a g4-standard-48 in Milan (europe-west8), 2026-11-04 Cloud Billing catalog:
+        # 48 vCPU x $0.058692 + 180 GiB x $0.007044 + one RTX 6000 96GB at $1.31478 = $5.40/h.
+        "hourly_cost_usd": 5.4,
+        # capex_usd is an ESTIMATE of the street price of the card, not a quote: verify before quoting a TCO.
+        "capex_usd": 8500.0,
+    },
     "L4_24GB": {
         "display_name": "NVIDIA L4 (24GB GDDR6, 72W Ada Tensor Core)",
         "vendor": "NVIDIA",
@@ -1538,6 +1559,9 @@ HARDWARE_SKU_ALIASES: Dict[str, str] = {
     "NVIDIA_L40S_48GB": "L40S_48GB",
     "NVIDIA_L40S": "L40S_48GB",
     "L40S": "L40S_48GB",
+    "NVIDIA_RTX_PRO_6000_96GB": "RTX_PRO_6000_96GB",
+    "NVIDIA_RTX_PRO_6000": "RTX_PRO_6000_96GB",
+    "RTX_PRO_6000": "RTX_PRO_6000_96GB",
     "NVIDIA_L4_24GB": "L4_24GB",
     "NVIDIA_L4": "L4_24GB",
     "L4": "L4_24GB",

@@ -450,9 +450,23 @@ def check_envelope(
     hardware_sku: Optional[str] = None,
     inventory: Optional[DeviceInventory] = None,
     allow_no_device: bool = False,
+    perf_cap: Optional[str] = None,
 ) -> EnvelopeCheckResult:
-  """Enforce `num_devices == 1`, memory <= 64 GB, and spec TOPS/BW within the envelope."""
-  from embodied_bench.schema import resolve_hardware_sku
+  """Enforce `num_devices == 1`, memory <= 64 GB, and spec TOPS/BW within the envelope.
+
+  `perf_cap` (a `PerformanceCapId` or alias, normally the recipe's `perf_cap`) selects another performance-cap tier from
+  `embodied_bench.schema.PERFORMANCE_CAP_ENVELOPES` (for example CAP_DATACENTER_1000T for a 96 GB part); without it the default
+  single-chip limits apply, exactly as before. The recorded `envelope_limits` name the tier that was checked.
+  """
+  from embodied_bench.schema import PERFORMANCE_CAP_ENVELOPES, resolve_hardware_sku, resolve_perf_cap_id
+
+  max_memory_gb, max_bf16_tflops = ENVELOPE_MAX_MEMORY_GB, ENVELOPE_MAX_BF16_TFLOPS
+  max_fp8_int8_tops, max_mem_bw_tbps, tier = ENVELOPE_MAX_FP8_INT8_TOPS, ENVELOPE_MAX_MEM_BW_TBPS, None
+  if perf_cap and resolve_perf_cap_id(perf_cap) != "CAP_SINGLE_CHIP":
+    tier = resolve_perf_cap_id(perf_cap)
+    cap = PERFORMANCE_CAP_ENVELOPES[tier]
+    max_memory_gb, max_bf16_tflops = float(cap.max_vram_gb), float(cap.max_fp16_tflops)
+    max_fp8_int8_tops, max_mem_bw_tbps = float(cap.max_int8_fp8_tops), float(cap.max_mem_bw_gbps) / 1000.0
 
   if hardware_sku:
     hardware_sku = resolve_hardware_sku(hardware_sku)
@@ -479,15 +493,15 @@ def check_envelope(
         "Pin one device (CUDA_VISIBLE_DEVICES=0 / HIP_VISIBLE_DEVICES=0 / TPU_VISIBLE_DEVICES=0 on a 1-chip TPU host)."
     )
 
-  if mem_mb is not None and mem_mb / 1024.0 > ENVELOPE_MAX_MEMORY_GB + 0.5:
-    violations.append(f"device memory {mem_mb / 1024.0:.1f} GB exceeds the {ENVELOPE_MAX_MEMORY_GB:.0f} GB single-chip envelope")
+  if mem_mb is not None and mem_mb / 1024.0 > max_memory_gb + 0.5:
+    violations.append(f"device memory {mem_mb / 1024.0:.1f} GB exceeds the {max_memory_gb:.0f} GB {tier or 'single-chip'} envelope")
   if spec:
-    if float(spec.get("fp16_tflops") or 0.0) > ENVELOPE_MAX_BF16_TFLOPS:
-      violations.append(f"SKU spec {spec['fp16_tflops']} BF16 TFLOPS exceeds {ENVELOPE_MAX_BF16_TFLOPS:.0f}")
-    if float(spec.get("fp8_int8_tops") or 0.0) > ENVELOPE_MAX_FP8_INT8_TOPS:
-      violations.append(f"SKU spec {spec['fp8_int8_tops']} FP8/INT8 TOPS exceeds {ENVELOPE_MAX_FP8_INT8_TOPS:.0f}")
-    if float(spec.get("mem_bw_gbps") or 0.0) > ENVELOPE_MAX_MEM_BW_TBPS * 1000.0:
-      violations.append(f"SKU spec {spec['mem_bw_gbps']} GB/s exceeds {ENVELOPE_MAX_MEM_BW_TBPS:.1f} TB/s")
+    if float(spec.get("fp16_tflops") or 0.0) > max_bf16_tflops:
+      violations.append(f"SKU spec {spec['fp16_tflops']} BF16 TFLOPS exceeds {max_bf16_tflops:.0f}")
+    if float(spec.get("fp8_int8_tops") or 0.0) > max_fp8_int8_tops:
+      violations.append(f"SKU spec {spec['fp8_int8_tops']} FP8/INT8 TOPS exceeds {max_fp8_int8_tops:.0f}")
+    if float(spec.get("mem_bw_gbps") or 0.0) > max_mem_bw_tbps * 1000.0:
+      violations.append(f"SKU spec {spec['mem_bw_gbps']} GB/s exceeds {max_mem_bw_tbps:.1f} TB/s")
     if mem_mb is not None and spec.get("vram_mb") and abs(float(spec["vram_mb"]) - mem_mb) / float(spec["vram_mb"]) > 0.15:
       violations.append(
           f"measured device memory {mem_mb:.0f} MB differs >15% from SKU {hardware_sku} spec {spec['vram_mb']} MB; "
@@ -516,10 +530,11 @@ def check_envelope(
       spec=spec,
       spec_provenance=spec_prov,
       envelope_limits={
-          "max_memory_gb": ENVELOPE_MAX_MEMORY_GB,
-          "max_bf16_tflops": ENVELOPE_MAX_BF16_TFLOPS,
-          "max_fp8_int8_tops": ENVELOPE_MAX_FP8_INT8_TOPS,
-          "max_mem_bw_tbps": ENVELOPE_MAX_MEM_BW_TBPS,
+          "max_memory_gb": max_memory_gb,
+          "max_bf16_tflops": max_bf16_tflops,
+          "max_fp8_int8_tops": max_fp8_int8_tops,
+          "max_mem_bw_tbps": max_mem_bw_tbps,
+          **({"perf_cap": tier} if tier else {}),
       },
       violations=violations,
       inventory=inv.to_dict(),

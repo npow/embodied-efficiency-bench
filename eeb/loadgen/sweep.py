@@ -246,8 +246,8 @@ class TraceBundleObservationSource(ObservationSource):
       for idx, sh in enumerate(shards):
         t_steps = sh.num_steps
         imgs = {
-            "agentview": np.ascontiguousarray(np.transpose(sh.rgb_frames[:, 0], (0, 2, 3, 1)), dtype=np.uint8),
-            "wrist": np.ascontiguousarray(np.transpose(sh.rgb_frames[:, 1], (0, 2, 3, 1)), dtype=np.uint8),
+            name: np.ascontiguousarray(np.transpose(sh.rgb_frames[:, cam_i], (0, 2, 3, 1)), dtype=np.uint8)
+            for cam_i, name in enumerate(sh.camera_names)
         }
         tr = EmbodiedXTrace(
             episode_id=sh.episode_id,
@@ -273,7 +273,7 @@ class TraceBundleObservationSource(ObservationSource):
                 sha256=str(shard_meta.get("sha256", "")),
                 content_sha256=tr.content_sha256(),
                 source_episode_index=idx,
-                cameras=["agentview", "wrist"],
+                cameras=list(sh.camera_names),
             )
         )
       self.manifest = TraceManifest(
@@ -281,7 +281,7 @@ class TraceBundleObservationSource(ObservationSource):
           source_dataset=",".join(raw_man.get("sources", ["LIBERO"])),
           license="MIT/CC-BY-4.0/Apache-2.0",
           fps=20.0,
-          cameras=["agentview", "wrist"],
+          cameras=list(shards[0].camera_names),
           split="public",
           episodes=ep_entries,
       )

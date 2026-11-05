@@ -371,8 +371,8 @@ def _load_traces_for_perturbation(
       for idx, sh in enumerate(shards):
         t_steps = sh.num_steps
         imgs = {
-            "agentview": np.ascontiguousarray(np.transpose(sh.rgb_frames[:, 0], (0, 2, 3, 1)), dtype=np.uint8),
-            "wrist": np.ascontiguousarray(np.transpose(sh.rgb_frames[:, 1], (0, 2, 3, 1)), dtype=np.uint8),
+            name: np.ascontiguousarray(np.transpose(sh.rgb_frames[:, cam_i], (0, 2, 3, 1)), dtype=np.uint8)
+            for cam_i, name in enumerate(sh.camera_names)
         }
         tr = EmbodiedXTrace(
             episode_id=sh.episode_id,

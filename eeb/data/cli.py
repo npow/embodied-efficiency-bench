@@ -316,6 +316,7 @@ def _cmd_prepare_traces(args: argparse.Namespace) -> int:
               cache_dir=eff_cache_dir,
               tracks=track_arg,
               token=getattr(args, "token", None),
+              num_cameras=int(getattr(args, "num_cameras", 2) or 2),
           )
         loader = EmbodiedXDatasetLoader(dataset_dir=out_dir, split=args.split)
         verified, errors = loader.verify_manifest()
@@ -643,6 +644,13 @@ def add_data_commands(data_sub) -> None:
       type=int,
       default=None,
       help="Number of canonical episodes to generate (default: all 8 episodes across LIBERO/DROID/BridgeData/OXE)",
+  )
+  p_pt_eval.add_argument(
+      "--num-cameras",
+      type=int,
+      choices=(2, 3),
+      default=2,
+      help="cameras per frame in the real trace shards: 2 (default; agentview + wrist) or 3 (the source dataset's first three, under their own names; DROID)",
   )
   p_pt_eval.add_argument(
       "--steps",
