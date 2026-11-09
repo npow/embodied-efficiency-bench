@@ -123,6 +123,8 @@ def extract_cosmos_action_conditioner_weights(raw_sd: Dict[str, Any]) -> Dict[st
   """Extract pretrained action/proprio conditioner weights from an official `robot/action-cond` state dict."""
   out: Dict[str, Any] = {}
   prefixes = (
+      "net.action_embedder_B_D.",
+      "net.action_embedder_B_3D.",
       "net.action_embedder.",
       "action_embedder.",
       "net.action_conditioner.",
@@ -133,9 +135,72 @@ def extract_cosmos_action_conditioner_weights(raw_sd: Dict[str, Any]) -> Dict[st
       continue
     for pfx in prefixes:
       if k.startswith(pfx):
-        out[k[len(pfx) :]] = v
+        # the official checkpoint keeps two MLPs (`action_embedder_B_D`, `action_embedder_B_3D`): keep their names
+        out[(k if pfx.startswith("net.action_embedder_") else k[len(pfx) :]).removeprefix("net.")] = v
         break
   return out
+
+
+def _build_action_transformer(diffusers: Any, **cfg: Any) -> Any:
+  """`diffusers.CosmosTransformer3DModel` plus the official action-chunk conditioning of `robot/action-cond`.
+
+  Mirrors `ActionChunkConditionedMinimalV1LVGDiT` (nvidia-cosmos/cosmos-predict2.5): the actions of each latent frame
+  (`temporal_compression_ratio` consecutive 7-dim actions, flattened to 28) go through two GELU(tanh) MLPs; the result
+  is added to the timestep projection (`action_embedder_B_D`, before the embedding norm) and to the AdaLN-LoRA
+  modulation (`action_embedder_B_3D`). The conditioning latent frame (index 0) gets zero action embedding.
+  """
+  import torch
+  import torch.nn as nn
+
+  class _Mlp(nn.Module):
+    def __init__(self, in_f: int, hidden: int, out_f: int) -> None:
+      super().__init__()
+      self.fc1 = nn.Linear(in_f, hidden)
+      self.activation = nn.GELU(approximate="tanh")
+      self.fc2 = nn.Linear(hidden, out_f)
+
+    def forward(self, x: Any) -> Any:
+      return self.fc2(self.activation(self.fc1(x)))
+
+  class ActionCosmosTransformer3D(diffusers.CosmosTransformer3DModel):
+    def __init__(self, action_in_features: int = 28, **kw: Any) -> None:
+      super().__init__(**kw)
+      d = int(kw["num_attention_heads"]) * int(kw["attention_head_dim"])
+      self.action_embedder_B_D = _Mlp(action_in_features, d * 4, d)
+      self.action_embedder_B_3D = _Mlp(action_in_features, d * 4, d * 3)
+
+    def forward(self, hidden_states, timestep, encoder_hidden_states, condition_mask, padding_mask, action, return_dict=False):
+      batch_size, _, num_frames, height, width = hidden_states.shape
+      hidden_states = torch.cat([hidden_states, condition_mask], dim=1)
+      pm = torch.nn.functional.interpolate(padding_mask, size=hidden_states.shape[-2:], mode="nearest")
+      hidden_states = torch.cat([hidden_states, pm.unsqueeze(2).repeat(batch_size, 1, num_frames, 1, 1)], dim=1)
+      rope = self.rope(hidden_states, fps=None)
+      extra_pos = self.learnable_pos_embed(hidden_states) if self.config.extra_pos_embed_type else None
+      p_t, p_h, p_w = self.config.patch_size
+      pt, ph, pw = num_frames // p_t, height // p_h, width // p_w
+      hidden_states = self.patch_embed(hidden_states).flatten(1, 3)
+      temb, emb_ts = self.time_embed(hidden_states, timestep.flatten())
+      # [B*T, C] -> [B, T, C]; add the per-latent-frame action embeddings (zeros for the conditioning frame)
+      a = action.to(hidden_states.dtype)
+      a_d = self.action_embedder_B_D(a)
+      a_3d = self.action_embedder_B_3D(a)
+      a_d = torch.cat([torch.zeros_like(a_d[:, :1]), a_d], dim=1)
+      a_3d = torch.cat([torch.zeros_like(a_3d[:, :1]), a_3d], dim=1)
+      temb = temb.view(batch_size, pt, -1) + a_3d
+      # reference order: t_embedding_norm(timestep projection + action_emb_B_D)
+      proj = self.time_embed.time_proj(timestep.flatten()).type_as(hidden_states).view(batch_size, pt, -1) + a_d
+      emb_ts = self.time_embed.norm(proj)
+      temb, emb_ts = (x.view(batch_size, pt, 1, 1, -1).expand(-1, -1, ph, pw, -1).flatten(1, 3) for x in (temb, emb_ts))
+      for block in self.transformer_blocks:
+        hidden_states = block(hidden_states, encoder_hidden_states, emb_ts, temb, rope, extra_pos, None, None)
+      hidden_states = self.proj_out(self.norm_out(hidden_states, emb_ts, temb))
+      hidden_states = hidden_states.unflatten(2, (p_h, p_w, p_t, -1))
+      hidden_states = hidden_states.unflatten(1, (pt, ph, pw))
+      hidden_states = hidden_states.permute(0, 7, 1, 6, 2, 4, 3, 5)
+      hidden_states = hidden_states.flatten(6, 7).flatten(4, 5).flatten(2, 3)
+      return (hidden_states,) if not return_dict else hidden_states
+
+  return ActionCosmosTransformer3D(**cfg)
 
 COSMOS_JAX_INSTALL_HINT = (
     "Cosmos-Predict2.5-2B (optional JAX / Flax alternative) server requires `jax`, `flax`, and `vidax` (or `maxdiffusion`):\n"
@@ -276,7 +341,10 @@ def convert_cosmos_transformer_state_dict(raw_sd: Dict[str, Any]) -> Dict[str, A
   for k, v in raw_sd.items():
     if (
         k.endswith("._extra_state")
+        or k.startswith("net.accum_")
         or k.startswith("net.pos_embedder.")
+        or k.startswith("net.action_embedder_B_D.")
+        or k.startswith("net.action_embedder_B_3D.")
         or k.startswith("net.action_embedder.")
         or k.startswith("action_embedder.")
         or k.startswith("net.action_conditioner.")
@@ -447,6 +515,7 @@ class CosmosPredict25Policy(BasePolicy):
     self._vae_dec: Any = None
     self._transformer: Any = None
     self._act_cond: Any = None
+    self._real_action = False
     self._prompt_ctx_cache: Dict[str, Any] = {}
     self._latents_mean: Any = None
     self._latents_inv_std: Any = None
@@ -599,7 +668,11 @@ class CosmosPredict25Policy(BasePolicy):
           f"{DEFAULT_COSMOS_REPO!r} ({DEFAULT_COSMOS_VARIANT}) checkpoint at revision {DEFAULT_COSMOS_REVISION!r}. "
           "Pass allow_untrained_action_adapter=True only for non-certified scaffolding tests."
       )
-    transformer = diffusers.CosmosTransformer3DModel(
+    self._real_action = "action_embedder_B_D.fc1.weight" in action_cond_sd
+    build_transformer = (
+        (lambda **kw: _build_action_transformer(diffusers, **kw)) if self._real_action else diffusers.CosmosTransformer3DModel
+    )
+    transformer = build_transformer(
         in_channels=17,
         out_channels=16,
         num_attention_heads=16,
@@ -617,7 +690,10 @@ class CosmosPredict25Policy(BasePolicy):
         crossattn_proj_in_channels=100352,
         encoder_hidden_states_channels=1024,
     ).to(dtype)
-    transformer.load_state_dict(convert_cosmos_transformer_state_dict(tr_raw_sd), strict=True)
+    tr_sd = convert_cosmos_transformer_state_dict(tr_raw_sd)
+    if self._real_action:
+      tr_sd.update(action_cond_sd)
+    transformer.load_state_dict(tr_sd, strict=True)
     transformer.eval()
     transformer.requires_grad_(False)
     del tr_raw_sd
@@ -856,16 +932,19 @@ class CosmosPredict25Policy(BasePolicy):
 
     vae.to(dev)
     transformer.to(dev)
-    act_cond = _ActionProprioConditioner(
-        act_dim=self.action_dim,
-        prop_dim=self.proprio_dim,
-        max_frames=max(self.num_frames, 32),
-        embed_dim=1024,
-        cond_dtype=dtype,
-        pretrained_sd=action_cond_sd,
-    ).to(dev)
-    act_cond.eval()
-    act_cond.requires_grad_(False)
+    if self._real_action:
+      act_cond = None   # the official action MLPs live inside the transformer
+    else:
+      act_cond = _ActionProprioConditioner(
+          act_dim=self.action_dim,
+          prop_dim=self.proprio_dim,
+          max_frames=max(self.num_frames, 32),
+          embed_dim=1024,
+          cond_dtype=dtype,
+          pretrained_sd=action_cond_sd,
+      ).to(dev)
+      act_cond.eval()
+      act_cond.requires_grad_(False)
 
     vae_enc = _StatelessWanEncode1F(vae).to(dev).eval()
     vae_dec = _StatelessWanDecode(vae, num_latent_frames=self._latent_t).to(dev).eval()
@@ -1167,9 +1246,17 @@ class CosmosPredict25Policy(BasePolicy):
 
       acts_dev = torch.from_numpy(acts_np).to(dev)
       props_dev = torch.from_numpy(props_np).to(dev)
-      act_tokens = self._act_cond(acts_dev, props_dev)
       text_ctx = torch.cat([self._lookup_prompt_ctx(p) for p in prompts_list], dim=0)
-      encoder_hidden_states = torch.cat([text_ctx, act_tokens], dim=1)
+      if self._real_action:
+        # one chunk of `temporal_compression_ratio` actions per generated latent frame (the conditioning frame has none)
+        k = self._vae_scale_temporal
+        n_chunks = self._latent_t - 1
+        action_chunks = acts_dev[:, : n_chunks * k].reshape(acts_dev.shape[0], n_chunks, k * acts_dev.shape[-1])
+        encoder_hidden_states = text_ctx
+        extra_kw: Dict[str, Any] = {"action": action_chunks}
+      else:
+        encoder_hidden_states = torch.cat([text_ctx, self._act_cond(acts_dev, props_dev)], dim=1)
+        extra_kw = {}
 
       cond_z0 = self._vae_enc(x_1f).float()
       cond_z0 = (cond_z0 - self._latents_mean) * self._latents_inv_std
@@ -1191,6 +1278,7 @@ class CosmosPredict25Policy(BasePolicy):
             condition_mask=cond_mask_dt,
             padding_mask=self._padding_mask_1,
             return_dict=False,
+            **extra_kw,
         )[0].float()
         vel = gt_velocity + pred * one_minus_mask_f32
         step_vels.append(vel)
