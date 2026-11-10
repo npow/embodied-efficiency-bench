@@ -988,14 +988,14 @@ class CosmosPredict25Policy(BasePolicy):
     with open(sched_cfg_path, "r", encoding="utf-8") as fp:
       raw_sched_cfg = json.load(fp)
     flow_shift = float(raw_sched_cfg.get("flow_shift", raw_sched_cfg.get("shift", 1.0)))
+    # The schedule diffusers ships for Cosmos-Predict2.5 (scripts/convert_cosmos_to_diffusers.py): Karras sigmas over
+    # [0.01, 200] mapped to flow sigmas. The linear schedule of the scaffold's FlowUniPC config produced incoherent video.
     sched = diffusers.UniPCMultistepScheduler(
-        num_train_timesteps=int(raw_sched_cfg.get("num_train_timesteps", 1000)),
-        solver_order=int(raw_sched_cfg.get("solver_order", 2)),
-        prediction_type=str(raw_sched_cfg.get("prediction_type", "flow_prediction")),
-        solver_type=str(raw_sched_cfg.get("solver_type", "bh2")),
-        lower_order_final=bool(raw_sched_cfg.get("lower_order_final", True)),
+        use_karras_sigmas=True,
         use_flow_sigmas=True,
-        flow_shift=flow_shift,
+        prediction_type="flow_prediction",
+        sigma_max=200.0,
+        sigma_min=0.01,
     )
     sched.set_timesteps(self.num_inference_steps, device="cpu")
     self._step_sigmas = [float(sched.sigmas[i].item()) for i in range(self.num_inference_steps)]
